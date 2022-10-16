@@ -14,6 +14,7 @@ int main(int argc, char* argv[])
     if(pid == 0)
     {
         execv("./sort", &argv[1]);
+        printf("high");
         exit(0);
     }
     wait(NULL);

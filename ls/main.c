@@ -3,13 +3,20 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <fcntl.h>
 #include <string.h>
 #include <errno.h>
-#include <libgen.h> 
 #include <assert.h>
 #include <dirent.h>
+#include <time.h>
+#include <pwd.h>
+#include <grp.h>
 
+void    ls(char* path, int flags);
+void  show(char* path, int flags);
+
+void  mode_to_str(mode_t mode, char* buf);
+void  time_to_str(struct timespec time, char* buf, size_t buf_len);
+char* unite_path(char* path1, char* path2);
 
 enum ls_flags
 {
@@ -20,7 +27,6 @@ enum ls_flags
     iF = 1 << 4,
     nF = 1 << 5,
 };
-
 
 char* unite_path(char* path1, char* path2)
 {
@@ -39,48 +45,135 @@ char* unite_path(char* path1, char* path2)
     return new_path;
 }
 
-
-void ls(DIR* opdir, char* path, int flags)
+void mode_to_str(mode_t mode, char* buf)
 {
-    if(flags | RF)
-    {
-        struct dirent* dir = readdir(opdir);
-        char* path = unite_path(path, dir->d_name);
-    }
-    
+    const char str[] = "rwxrwxrwx";
+
+    for (int i = 0; i < 9; i++) 
+        buf[i] = (mode & (1 << (8-i))) ? str[i] : '-';
+
+    buf[9] = '\0';
 }
 
-void show(DIR* opdir, char* path, int flags)
+void time_to_str(struct timespec time, char* buf, size_t buf_len)
 {
+    struct tm* time_ptr = localtime(&time.tv_sec);
+    strftime(buf, buf_len, "%d %b %H:%M", time_ptr);
+}
+
+void is_error(char* path)
+{
+    printf("ls: %s: No such file or directory\n", path);
+        return;
+}
+
+void ls(char* path, int flags)
+{
+    DIR* opdir = opendir(path);
+    if(!opdir) return is_error(path);
+
     struct dirent* dir = NULL;
 
-    while(dir = readdir(opdir))
+    show(path, flags);
+
+    while(1)
     {
-        assert(dir);
+        dir = readdir(opdir);
+        if(!dir)
+            break;
+
+        if(flags & RF && !(flags & dF))
+        {
+            char* new_path = unite_path(path, dir->d_name);
+            assert(new_path);
+
+            struct stat meta = {};
+            stat(new_path, &meta);
+
+            if(S_ISDIR(meta.st_mode))
+            {
+                if(strcmp(dir->d_name, ".") && strcmp(dir->d_name, ".."))
+                {
+                    printf("\n%s:\n", new_path);
+                    ls(new_path, flags);
+                }
+            }
+
+            free(new_path);
+        }
+    }
+    closedir(opdir);
+}
+
+void show(char* path, int flags)
+{
+    assert(path);
+
+    DIR* opdir = opendir(path);
+    if(!opdir) return is_error(path);
+
+    struct dirent* dir = NULL;
+
+    while(1)
+    {
+        dir = readdir(opdir);
+        if(!dir)
+            break;
+
+        if((!(flags & aF)) & (dir->d_name[0] == '.'))
+            continue;
 
         char* new_path = unite_path(path, dir->d_name);
+        assert(new_path);
+
         struct stat meta = {};
         stat(new_path, &meta);
 
-        if(flags & lF)
+        if(flags & nF)
         {
-            printf("%llu\t%s\t%d\n", dir->d_ino, dir->d_name, meta.st_ctimespec.tv_sec);
-        }
-        else if(flags & iF)
-        {
-            printf("%llu\t%s\n", dir->d_ino, dir->d_name);
-        }
-        else if(flags & nF)
-        {
-            printf("%llu\t%s\t%d\n", dir->d_ino, dir->d_name, meta.st_ino);
-        }
-        else if(flags & aF || dir->d_name[0] != '.')
-        {
-            printf("%s\n", dir->d_name);
-        }
+            if(flags & iF)
+                printf("%-11llu", dir->d_ino);
+                
+            char mode_buf[10] = {};
+            char time_buf[32] = {};
 
+            mode_to_str(meta.st_mode, mode_buf);
+            time_to_str(meta.st_ctimespec, time_buf, 32);
+
+            printf(" %-11s%-2d%-5d%-3d%6lld %-13s%s\n", mode_buf, meta.st_nlink, 
+               meta.st_uid, meta.st_gid, meta.st_size, time_buf, dir->d_name);
+        }
+        else if(flags & lF)
+        {
+            if(flags & iF)
+                printf("%-11llu", dir->d_ino);
+
+            char mode_buf[10] = {};
+            char time_buf[32] = {};
+
+            mode_to_str(meta.st_mode, mode_buf);
+            time_to_str(meta.st_ctimespec, time_buf, 32);
+
+            struct passwd* user  = getpwuid(meta.st_uid);
+            struct group*  group = getgrgid(meta.st_gid);
+
+            printf(" %-11s%-2d%-17s%-7s%6lld %-13s%s\n", mode_buf, meta.st_nlink, 
+               user->pw_name, group->gr_name, meta.st_size, time_buf, dir->d_name);
+        }
+        else
+        {
+            if(flags & iF)
+                printf("%-11llu", dir->d_ino);
+
+            printf("%s\t", dir->d_name);
+        }
         free(new_path);
     }
+
+    if(!(flags & iF) && !(flags & lF) && !(flags & nF))
+        printf("\n");
+
+    closedir(opdir);
 }
 
 int main(int argc, char* argv[])
@@ -119,16 +212,15 @@ int main(int argc, char* argv[])
 
     if(optind == argc)
     {
-        DIR* opdir = opendir(".");
-        ls(opdir, ".", flags);
-        closedir(opdir);
+        ls(".", flags);
     }
 
     for(int i = optind; i < argc; i++)
     {
-        DIR* opdir = opendir(argv[i]);
-        ls(opdir, argv[i], flags);
-        closedir(opdir);
+        if(argc - optind > 1)
+            printf("%s:\n", argv[i]);
+
+        ls(argv[i], flags);
     }
 
     return 0;

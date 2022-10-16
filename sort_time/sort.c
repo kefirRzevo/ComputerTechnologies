@@ -13,7 +13,6 @@ int main(int argc, char* argv[])
         if(pid == 0)
         {
             usleep(20000*temp);
-            printf("|%d ", temp);
             exit(0);
         }
     }
