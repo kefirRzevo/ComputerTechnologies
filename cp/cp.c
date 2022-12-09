@@ -8,64 +8,72 @@
 #include <errno.h>
 #include <libgen.h> 
 
-int my_write(int fd, const void* buf, size_t nbyte)
-{
-    int swb = 0;
-    while(swb < nbyte)
-    {
-        int wb = write(fd, buf + swb, nbyte - swb);
-        if(wb < 0)
-            return errno;
-        swb+=wb;
-    }
-    return swb;
-}
 
-int my_read(int fd, void* buf, size_t count)
+int my_copy(const char* file_name, int dir_fd, int force_flag, char* cpfile_name)
 {
-    int srb = 0;
-    while(srb < count)
-    {
-        int rb = read(fd, buf + srb, count - srb);
-        if(rb < 0)
-            return errno;
-        srb+=rb;
-    }
-    return srb;
-}
+    int error = 0;
 
-int my_copy(const char* from, int to_d, int force_flag, char* to_name)
-{
-    int from_d = open(from, O_RDONLY);
-    if(from_d < 0)
+    int file_fd = open(file_name, O_RDONLY);
+    if(file_fd < 0)
     {
-        printf("cp: %s/%s can't be opened\n", to_name, from);
-        return errno;
+        error = errno;
+        printf("cp: %s can't be opened\n", file_name);
+        return error;
     }
 
-    if(force_flag) 
-        unlink(to_name);
+    if(force_flag)
+    {
+        if(unlinkat(dir_fd, cpfile_name, 0) < 0)
+        {
+            error = errno;
+            close(file_fd);
+            return error;
+        }
+    }
 
-    struct stat from_st = {};
-    if(fstat(from_d, &from_st) < 0)
-        return errno;
+    struct stat file_st = {};
+    if(fstat(file_fd, &file_st) < 0)
+    {
+        error = errno;
+        close(file_fd);
+        return error;
+    }
 
-    long long from_size = from_st.st_size;
+    long long file_size = file_st.st_size;
 
-    char* buf = (char* )malloc(from_size);
+    char* buf = (char* )malloc(file_size);
     if(!buf)
-        return errno;
-
-    if(my_read(from_d, buf, from_size) < 0)
     {
-        free(buf);
-        return errno;
+        error = errno;
+        close(file_fd);
+        return error;
     }
 
-    if(my_write(to_d, buf, from_size) < 0)
+    int cpfile_fd = openat(dir_fd, cpfile_name, O_TRUNC | O_CREAT | O_RDWR, file_st.st_mode);
+    if(cpfile_fd < 0)
     {
+        error = errno;
+        close(file_fd);
         free(buf);
-        return errno;
+        return error;
+    }
+
+    if(read(file_fd, buf, file_size) < 0)
+    {
+        error = errno;
+        close(file_fd);
+        close(cpfile_fd);
+        free(buf);
+        return error;
+    }
+
+    if(write(cpfile_fd, buf, file_size) < 0)
+    {
+        error = errno;
+        close(file_fd);
+        close(cpfile_fd);
+        free(buf);
+        return error;
     }
 
     return 0;
@@ -78,35 +86,23 @@ enum cp_flags
     FF = 1 << 2,
 };
 
-int print_usage()
+int usage()
 {
     printf("usage: cp [-R [-H | -L | -P]] [-fi | -n] [-aclpsvXx] source_file target_file\n"
            "       cp [-R [-H | -L | -P]] [-fi | -n] [-aclpsvXx] source_file ... target_directory\n");
            return 0;
 }
 
-int print_is_dir(char* dir)
+int is_dir(char* dir)
 {
     printf("cp: %s is a directory (not copied).\n", dir);
     return 0;
 }
 
-int print_no_dir(char* dir)
+int isno_dir(char* dir)
 {
     printf("cp: %s is not a directory\n", dir);
     return 0;
-}
-
-int print_no_file_dir(char* file_dir)
-{
-    printf("cp: %s: No such file or directory\n", file_dir);
-    return 0;
-}
-
-int is_error(int error)
-{
-    fprintf(stderr, "Error: %d\n", error);
-    return 0;    
 }
 
 int ask(char* filepath, char* dir)
@@ -126,6 +122,7 @@ int ask(char* filepath, char* dir)
         printf("not overwritten\n");
         return 0;
     }
+
     return 1;
 }
 
@@ -134,9 +131,6 @@ int main(int argc, char* argv[])
     int flags = 0;
     int error = 0;
     int ret   = 0;
-
-    if(argc == 1)
-        return 0;
 
     while((ret = getopt(argc, argv, "ivf")) != -1)
     {
@@ -154,62 +148,67 @@ int main(int argc, char* argv[])
             case '?':
             default:
                     printf("cp: illegal option -- %c\n", (char)optopt);
-                    return print_usage();
+                    return usage();
         }
     }
 
     if(argc - optind < 2)
-        return print_usage();
+        return usage();
 
-    struct stat to = {};
-    if(stat(argv[argc - 1], &to) < 0)
-        return print_no_file_dir(argv[argc - 1]);
+    struct stat cpfile_st = {};
+    if(stat(argv[argc - 1], &cpfile_st) < 0)
+        return errno;
 
-    if(S_ISDIR(to.st_mode))
+    if(S_ISDIR(cpfile_st.st_mode))
     {
-        int to_d = open(argv[argc - 1], O_RDONLY | O_DIRECTORY);
+        int dir_fd = open(argv[argc - 1], O_RDONLY | O_DIRECTORY);
+        if(dir_fd < 0)
+            return errno;
+
         for(int i = optind; i < argc - 1; i++)
         {
             if(flags & IF)
+            {
+                if(fstatat(dir_fd, basename(argv[i]), &cpfile_st, 0) < 0)
+                {
+                    error = errno;
+                    close(dir_fd);
+                    return error;
+                }
+
                 if(!ask(basename(argv[i]), argv[argc - 1]))
                     continue;
-
-            struct stat to_file = {};
-
-            if(stat(argv[i], &to_file) < 0)
-                return print_no_file_dir(argv[i]);
-
-            if(S_ISDIR(to_file.st_mode))
-            {
-                print_is_dir(argv[i]);
-                continue;
             }
 
-            int to_f = openat(to_d, basename(argv[i]), O_RDWR);
-
-            if(my_copy(argv[i], to_f, flags | FF, argv[argc - 1]) < 0)
-                return is_error(errno);  
+            error = my_copy(argv[i], dir_fd, flags, basename(argv[i]));
+            if(error)
+                return error; 
 
             if(flags & VF) 
                 printf("%s -> %s/%s\n", argv[i], argv[argc - 1], basename(argv[i]));    
-        }    
+        } 
+        close(dir_fd);   
         return 0; 
     }
 
     if(argc - optind != 2)
-        return print_no_dir(argv[argc - 1]);
+        return isno_dir(argv[argc - 1]);
 
     if(flags & IF)
+    {
+        if(stat(argv[optind+1], &cpfile_st) < 0)
+            return errno;
+            
         if(!ask(argv[argc - 1], NULL))
             return 0;
+    }
 
-    int to_d = open(argv[argc - 1], O_RDWR);
+    error = my_copy(argv[optind], AT_FDCWD, flags, argv[optind + 1]);
+    if(error)
+        return error;
 
-    if(my_copy(argv[optind], to_d, flags & FF, argv[argc - 1]) < 0)
-        return is_error(errno);
-
-    if(flags & VF) 
-        printf("%s -> %s\n", argv[optind], argv[argc - 1]);
+    if(flags & VF)
+        printf("%s -> %s\n", argv[optind], argv[optind + 1]);
 
     return 0;
 }
