@@ -65,7 +65,6 @@ int get_cmds(cmd** cmds_ptr, char* cmds_buf, size_t* n_cmds_ptr)
 
         while(cmd_token != NULL)
         {
-
             args[n_args] = cmd_token;
             n_args++;
 
@@ -124,9 +123,6 @@ int main()
 
         if(get_cmds(&cmds, cmds_buf, &n_cmds))
             return -1;
-        //print_cmds(cmds, n_cmds);
-        //printf("|%s||%s|%s|%s|%s|\n", cmds[0].name, cmds[0].args[0], cmds[0].args[1], cmds[0].args[2], cmds[0].args[3]);
-        //execvp(*cmds[0].args, cmds[0].args);
 
         int(* pipes)[2] = (int(*)[2])malloc((n_cmds-1) * 2 * sizeof(int));
         if(!pipes)
