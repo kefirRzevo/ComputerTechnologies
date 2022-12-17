@@ -113,11 +113,13 @@ int passenger(int n_passenger)
         if(semop(semid, P_exit_P_trap, 2) == -1)
             return is_error("Bad semop P_exit_P_trap\n");
 
-        dump("Пассажир %d вернулся с трапа\n", n_passenger);
+        dump("Пассажир %d зашёл на трап\n", n_passenger);
         usleep(delay*(rand()%100));
 
         if(semop(semid, &V_trap, 1) == -1)
             return is_error("Bad semop V_trap\n");
+        
+        dump("Пассажир %d сошел с трапа\n", n_passenger);
     }
 }
 
