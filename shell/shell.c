@@ -124,45 +124,63 @@ int main()
         if(get_cmds(&cmds, cmds_buf, &n_cmds))
             return -1;
 
-        int(* pipes)[2] = (int(*)[2])malloc((n_cmds-1) * 2 * sizeof(int));
-        if(!pipes)
-            return errno;
+        if (n_cmds == 0) 
+        {
+            free_cmds(cmds, n_cmds);
+            continue;
+        }
 
-        for(size_t i = 0; i < n_cmds-1; i++)
-            pipe(pipes[i]);
+        size_t n_pipes = n_cmds - 1;
+        int (*pipes)[2] = malloc(n_pipes * 2 * sizeof(int));
+        if (!pipes)
+            return free_cmds(cmds, n_cmds), EXIT_FAILURE;
 
-        for(size_t i = 0; i < n_cmds; i++)
+        for (size_t i = 0; i < n_pipes; i++) 
+        {
+            if (pipe(pipes[i]) == -1)
+                return free(pipes), free_cmds(cmds, n_cmds), errno;
+        }
+
+        for (size_t i = 0; i < n_cmds; i++) 
         {
             pid_t pid = fork();
-            if(pid == 0)
+            if (pid == 0) 
             {
-                if(i != 0)
-                    dup2(pipes[i][0], 0);
-                
-                if(i != n_cmds-1)
-                    dup2(pipes[i+1][1], 1);
-
-                for(size_t i = 0; i < n_cmds-1; i++)
+                if (i != 0) 
                 {
-                    close(pipes[i][1]);
-                    close(pipes[i][0]);
+                    if (dup2(pipes[i - 1][0], 0) == -1)
+                        return error(errno, "write dup2 fail"), errno;
                 }
 
-                execvp(cmds[i].name, cmds[i].args);
-                return error(errno, "execvp returned smth");
-            }
+                if (i < n_cmds - 1) 
+                {
+                    if (dup2(pipes[i][1], 1) == -1)
+                        return error(errno, "read dup2 fail");
+                }
 
-            int status = 0;
+                for (size_t j = 0; j < n_pipes; j++)
+                    close(pipes[j][0]), close(pipes[j][1]);
+
+                execvp(cmds[i].name, cmds[i].args);
+                return error(errno, "smth after execvp");
+            }
+        }
+
+        for (size_t j = 0; j < n_pipes; j++)
+        {
+            close(pipes[j][0]);
+            close(pipes[j][1]);
+        }
+
+        int status = 0;
+        for (size_t i = 0; i < n_cmds; i++) 
+        {
             wait(&status);
             status = WEXITSTATUS(status);
-
-            if(status == ENOENT)
-                return error(status, "error in cmd %s", cmds[i].name);
         }
 
         free_cmds(cmds, n_cmds);
-        if(n_cmds > 1)
-            free(pipes);
+        free(pipes);
     }
 
     return 0;
